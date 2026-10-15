@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AFK Client</title>
+<style>
+:root{--bg:#111318;--card:#1a1d24;--line:#2a2e38;--tx:#e6e8ee;--mu:#8a90a0;--ac:#4ade80}
+*{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--tx);display:flex;height:100vh}
+aside{width:260px;border-right:1px solid var(--line);padding:12px;overflow:auto;flex-shrink:0}
+main{flex:1;padding:16px;overflow:auto}
+button{background:#2a2e38;color:var(--tx);border:0;border-radius:6px;padding:6px 12px;cursor:pointer}button:hover{background:#363b48}
+button.p{background:var(--ac);color:#06210f}button.d{background:#7f1d1d}
+input,select,textarea{background:#0e1015;color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%}
+.acc{padding:8px;border-radius:8px;cursor:pointer;margin:4px 0;border:1px solid transparent}.acc.on{background:var(--card);border-color:var(--line)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:#666}
+.online{background:var(--ac)}.connecting,.reconnecting{background:#facc15}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+h3{margin:0 0 10px;font-size:13px;color:var(--mu);text-transform:uppercase;letter-spacing:.05em}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+label{font-size:12px;color:var(--mu);display:block}label.c{display:flex;gap:6px;align-items:center}label.c input{width:auto}
+.inv{display:grid;grid-template-columns:repeat(9,52px);gap:4px}
+.slot{width:52px;height:52px;border:1px solid var(--line);border-radius:6px;background:#0e1015;position:relative;overflow:hidden}
+.slot.held{border-color:var(--ac)}.slot .n{font-size:9px;padding:2px;display:block;line-height:1.1;word-break:break-all}
+.slot b{position:absolute;right:3px;bottom:1px;font-size:12px}
+#log{height:200px;overflow:auto;background:#0e1015;border-radius:6px;padding:8px;font:12px ui-monospace,monospace;white-space:pre-wrap}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.mu{color:var(--mu)}
+dialog{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:10px;width:480px}
+@media(max-width:800px){body{flex-direction:column;height:auto}aside{width:100%}.inv{grid-template-columns:repeat(9,1fr)}.slot{width:auto;aspect-ratio:1;height:auto}}
+</style></head><body>
+<aside>
+  <div class="row" style="margin-bottom:8px"><button class="p" onclick="newAcc()">+ Account</button><button onclick="openProxies()">Proxies</button></div>
+  <div id="list"></div>
+</aside>
+<main id="main"><p class="mu">Select or add an account.</p></main>
+<dialog id="pd"><h3>Proxy pool (one per line)</h3>
+  <p class="mu">socks5://user:pass@host:port, socks4://host:port or http://user:pass@host:port. Set an account's proxy to <code>pool</code> to pick randomly on every connect.</p>
+  <textarea id="pt" rows="8"></textarea><div class="row" style="margin-top:8px"><button class="p" onclick="saveProxies()">Save</button><button onclick="pd.close()">Close</button></div></dialog>
+<script>
+const $=s=>document.querySelector(s);let accounts=[],sel=null,isNew=false;
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(p,m='GET',b){const r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});if(!r.ok)throw new Error(await r.text());return r.json()}
+const FIELDS=[['label','Label'],['username','Username / email'],['auth','Auth',['microsoft','offline']],['server','Server (host[:port])'],['version','MC version (e.g. 1.20.4)'],
+['proxy','Proxy (blank=direct, "pool"=random from pool)'],['eatBelow','Eat when food below (1-20)','number'],['stuckSeconds','Stuck after (seconds)','number'],
+['stuckAction','When stuck',['jump','command']],['stuckCommand','Stuck command'],
+['sellAxe.enabled','Auto-buy sell axe','check'],['sellAxe.command','Buy command'],['sellAxe.match','Item name to match'],['sellAxe.confirmMatch','Confirm button keywords (comma)'],['autoStart','Start on deploy','check']];
+const get=(o,k)=>k.split('.').reduce((a,c)=>a?.[c],o);
+function formHtml(a){return FIELDS.map(([k,l,t])=>{const v=get(a,k);
+ if(t==='check')return`<label class="c"><input type="checkbox" data-k="${k}" ${v?'checked':''}>${l}</label>`;
+ if(Array.isArray(t))return`<div><label>${l}</label><select data-k="${k}">${t.map(o=>`<option ${o===v?'selected':''}>${o}</option>`).join('')}</select></div>`;
+ return`<div><label>${l}</label><input data-k="${k}" type="${t||'text'}" value="${esc(v)}"></div>`}).join('')}
+function readForm(){const o={sellAxe:{}};document.querySelectorAll('[data-k]').forEach(e=>{const k=e.dataset.k;let v=e.type==='checkbox'?e.checked:e.type==='number'?Number(e.value):e.value.trim();
+ if(k.startsWith('sellAxe.'))o.sellAxe[k.slice(8)]=v;else o[k]=v});return o}
+function renderList(){$('#list').innerHTML=accounts.map(a=>`<div class="acc ${a.id===sel?'on':''}" onclick="pick('${a.id}')"><span class="dot ${a.status}"></span>${esc(a.label||a.username)}<div class="mu" style="font-size:12px">${a.status}${a.status==='online'?` · ❤${Math.round(a.health||0)} 🍗${a.food??''}`:''}</div></div>`).join('')}
+function pick(id){sel=id;isNew=false;buildMain();renderList()}
+function newAcc(){sel=null;isNew=true;buildMain()}
+function buildMain(){const a=isNew?{auth:'microsoft',eatBelow:14,stuckSeconds:10,stuckAction:'jump',stuckCommand:'/home',autoStart:true,sellAxe:{command:'/ah sell axe',match:'sell axe',confirmMatch:'lime,emerald,confirm,green'}}:accounts.find(x=>x.id===sel);
+ if(!a){$('#main').innerHTML='<p class="mu">Select or add an account.</p>';return}
+ $('#main').innerHTML=`<div class="card"><h3>${isNew?'New account':'Settings'}</h3><div class="grid">${formHtml(a)}</div>
+ <div class="row" style="margin-top:12px"><button class="p" onclick="saveAcc()">${isNew?'Add':'Save'}</button>${isNew?'':`<button onclick="act('start')">Start</button><button onclick="act('stop')">Stop</button><button onclick="act('restart')">Restart</button><button class="d" onclick="delAcc()">Delete</button>`}</div>
+ <p class="mu" style="font-size:12px">Proxy/server changes apply on the next (re)connect. Press Restart to apply now.</p></div>
+ ${isNew?'':`<div class="card" id="msa" style="display:none"></div><div class="card"><h3>Inventory <span id="stat" class="mu"></span></h3><div id="inv" class="mu">Bot is offline.</div></div>
+ <div class="card"><h3>Console</h3><div id="log"></div><div class="row" style="margin-top:8px"><input id="msg" placeholder="Chat message or /command" style="flex:1" onkeydown="if(event.key==='Enter')sendMsg()"><button onclick="sendMsg()">Send</button></div></div>`}`}
+async function saveAcc(){try{const b=readForm();if(isNew){const r=await api('/accounts','POST',b);sel=r.id;isNew=false}else await api('/accounts/'+sel,'PUT',b);await refresh();buildMain()}catch(e){alert(e.message)}}
+async function act(x){await api(`/accounts/${sel}/${x}`,'POST');refresh()}
+async function delAcc(){if(confirm('Delete this account?')){await api('/accounts/'+sel,'DELETE');sel=null;await refresh();buildMain()}}
+async function sendMsg(){const i=$('#msg');if(!i.value)return;await api(`/accounts/${sel}/chat`,'POST',{message:i.value});i.value=''}
+const hue=n=>Math.abs([...n].reduce((a,c)=>a*31+c.charCodeAt(0)|0,7))%360;
+const slot=(it,held)=>`<div class="slot ${held?'held':''}" ${it?`title="${esc(it.display)} x${it.count}" style="background:hsl(${hue(it.name)} 35% 26%)"`:''}>${it?`<span class="n">${esc(it.display.slice(0,10))}</span>${it.count>1?`<b>${it.count}</b>`:''}`:''}</div>`;
+function invHtml(s){const r=(a,b)=>s.slots.slice(a,b).map((it,i)=>slot(it,false)).join('');
+ return`<p class="mu">Armor / offhand</p><div class="inv">${r(5,9)}${slot(s.slots[45])}</div><p class="mu">Inventory</p><div class="inv">${r(9,36)}</div><p class="mu">Hotbar</p><div class="inv">${s.slots.slice(36,45).map((it,i)=>slot(it,i===s.held)).join('')}</div>`}
+async function refresh(){try{accounts=await api('/accounts');renderList();const a=accounts.find(x=>x.id===sel);if(!a||isNew)return;
+ const m=$('#msa');if(m){m.style.display=a.msa?'block':'none';if(a.msa)m.innerHTML=`<b>Microsoft login needed:</b> open <a style="color:var(--ac)" target="_blank" href="${esc(a.msa.verification_uri)}">${esc(a.msa.verification_uri)}</a> and enter <b>${esc(a.msa.user_code)}</b>`}
+ const s=await api(`/accounts/${sel}/inventory`);const inv=$('#inv');if(inv)inv.innerHTML=s?invHtml(s):'Bot is offline.';const st=$('#stat');if(st)st.textContent=s?`· pos ${s.pos?.x} ${s.pos?.y} ${s.pos?.z}`:'';
+ const l=await api(`/accounts/${sel}/logs`);const lg=$('#log');if(lg){const bottom=lg.scrollTop+lg.clientHeight>=lg.scrollHeight-20;lg.textContent=l.join('\n');if(bottom)lg.scrollTop=lg.scrollHeight}}catch(e){}}
+async function openProxies(){$('#pt').value=(await api('/proxies')).join('\n');$('#pd').showModal()}
+async function saveProxies(){await api('/proxies','PUT',{list:$('#pt').value.split('\n')});$('#pd').close()}
+refresh();setInterval(refresh,2000);
+</script></body></html>
